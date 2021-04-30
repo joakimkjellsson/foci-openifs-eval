@@ -1,0 +1,5 @@
+.ipynb_checkpoints
+dask-worker-space
+*.png
+*.pdf
+*.jpg
