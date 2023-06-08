@@ -3,4 +3,6 @@ dask-worker-space
 *.png
 *.pdf
 *.jpg
+*.nc
+data/*.nc 
 Untitled*.ipynb
