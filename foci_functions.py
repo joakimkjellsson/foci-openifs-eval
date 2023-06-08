@@ -19,6 +19,17 @@ def locate_nemo_mesh(machine):
         mesh_mask = '/gxfs_work1/geomar/smomw352/foci_input2/oasis3_openifs43r3-tco95_orca05/opa/mesh_mask.nc'
     return mesh_mask
     
+    
+def locate_oasis_files(exp,machine='nesh'):
+    
+    esmdir = locate_esmdir(machine)
+    
+    grids = '%s/%s/input/oasis3mct/grids.nc' % (esmdir, exp)
+    masks = '%s/%s/input/oasis3mct/masks.nc' % (esmdir, exp)
+    areas = '%s/%s/input/oasis3mct/areas.nc' % (esmdir, exp)
+            
+    return grids, masks, areas
+
 
 def read_nemo_mesh(machine='nesh'):
     
@@ -51,6 +62,17 @@ def read_nemo_mesh(machine='nesh'):
     ds = xr.merge([tarea, uarea, varea, dxt, dyt, tvol, tmask, umask, vmask])
     return ds
 
+
+def read_oasis_mesh(exp, machine='nesh'):
+    
+    grids, masks, areas = locate_oasis_files(exp, machine)
+    
+    dsg = xr.open_dataset(grids)
+    dsm = xr.open_dataset(masks)
+    dsa = xr.open_dataset(areas)
+    
+    return xr.merge([dsg, dsm, dsa], compat='override')
+
 def read_openifs(exp_list, time_list, version_list=[], grid='regular_sfc', freq='1m', machine='nesh'):
     
     # find esm dir
@@ -66,9 +88,9 @@ def read_openifs(exp_list, time_list, version_list=[], grid='regular_sfc', freq=
     for exp,time,ver in zip(exp_list,time_list,version_list):
         
         if freq == '1y':
-            files = '%s/%s/outdata/oifs/ym/*1y*regular_sfc.nc' % (esmdir,exp,)
+            files = '%s/%s/outdata/oifs/ym/*1y*%s.nc' % (esmdir,exp,grid)
         else:
-            files = '%s/%s/outdata/oifs/*%s*regular_sfc.nc' % (esmdir,exp,freq)
+            files = '%s/%s/outdata/oifs/*%s*%s.nc' % (esmdir,exp,freq,grid)
         print(files)
         
         # open multi-file data set. We need to use cftime since the normal python calendar stops working after 2300. 
@@ -143,6 +165,11 @@ def read_amoc(exp_list, time_list, machine='nesh'):
                                    compat='override',parallel=True
                                   ).rename({'time_counter':'time'}).sel(time=time)
             
+            # For overturning stream functions, add latitude on y coord
+            if i == 0:
+                lat = ds['nav_lat'][:,0].data
+                ds = ds.assign_coords(lat=("y", lat))
+            
             if i > 0:
                 ds = ds.rename({'AMOC_MAX':name})
             
@@ -152,6 +179,94 @@ def read_amoc(exp_list, time_list, machine='nesh'):
         ds_all.append(_ds)
         
     return ds_all
+
+
+def read_transports(exp_list, time_list, machine='nesh'):
+    
+    # find esm dir
+    esmdir = locate_esmdir(machine)
+    
+    transp_list = ['AFR_AUSTR','AM_AFR','AUS_AA','AUSTR_AM','BAFFIN','BERING',
+                   'CAMPBELL','CUBA_FLORIDA','DAVIS','DENMARK_STRAIT','DRAKE',
+                   'FLORIDA_BAHAMAS','FRAM','ICELAND_SCOTLAND','ITF',
+                   'KERGUELEN','MOZAMBIQUE_CHANNEL','SOUTH_AFR']
+    
+    # list for all data
+    ds_all = []
+    for exp,time in zip(exp_list,time_list):
+        
+        ds_derived = []
+        
+        for i,(transp,name) in enumerate(zip(transp_list,transp_list)):
+            
+            files = '%s/%s/derived/nemo/%s*%s_transports.nc' % (esmdir,exp,exp,transp)
+            
+            # open multi-file data set. We need to use cftime since the normal python calendar stops working after 2300. 
+            # also, we rename time variable from time_counter to time to make life easier
+            ds = xr.open_mfdataset(files,combine='nested', 
+                                   concat_dim="time_counter", use_cftime=True,
+                                   data_vars='minimal', coords='minimal',
+                                   compat='override',parallel=True
+                                  ).rename({'time_counter':'time'}).sel(time=time)
+            
+            # each transport file has its own nav_lon etc, 
+            # so we cant just merge all datasets
+            # Need to select just the transport as time series
+            
+            # all variables in a list
+            var_names = ds.keys()
+            
+            # find variable that starts with vtrp 
+            v = [s for s in var_names if 'vtrp' in s][0]
+            
+            # select this variable alone
+            da = ds[v].isel(x=0,y=0)
+            
+            # add to list
+            ds_derived.append(da)
+        
+        # merge all DataArrays to one DataSet
+        _ds = xr.merge(ds_derived)
+        
+        # add result to a list
+        ds_all.append(_ds)
+        
+    return ds_all
+
+
+def read_psi(exp_list, time_list, machine='nesh'):
+    
+    # find esm dir
+    esmdir = locate_esmdir(machine)
+    
+    derived_list = ['psi']
+    derived_name = ['psi']
+    
+    # list for all data
+    ds_all = []
+    for exp,time in zip(exp_list,time_list):
+        
+        ds_derived = []
+        
+        for i,(derived,name) in enumerate(zip(derived_list,derived_name)):
+            
+            files = '%s/%s/derived/nemo/%s*%s.nc' % (esmdir,exp,exp,derived)
+            
+            # open multi-file data set. We need to use cftime since the normal python calendar stops working after 2300. 
+            # also, we rename time variable from time_counter to time to make life easier
+            ds = xr.open_mfdataset(files,combine='nested', 
+                                   concat_dim="time_counter", use_cftime=True,
+                                   data_vars='minimal', coords='minimal',
+                                   compat='override',parallel=True
+                                  ).rename({'time_counter':'time'}).sel(time=time)
+            
+            ds_derived.append(ds)
+        
+        _ds = xr.merge(ds_derived)
+        ds_all.append(_ds)
+        
+    return ds_all    
+
 
 #
 # global mean for OpenIFS
@@ -174,7 +289,16 @@ def global_mean_nemo(data, mask, area, lonname='x', latname='y'):
     data_wgt = data.where(mask == 1).weighted(area)
     data_mean = data_wgt.mean((lonname,latname))
     
-    return data_mean 
+    return data_mean
+
+def zonal_mean_nemo(data, mask, area, lonname='x', latname='y'):
+    
+    # Weighted global mean
+    data_wgt = data.where(mask == 1).weighted(area)
+    data_mean = data_wgt.mean((lonname))
+    lat_mean = data['nav_lat'].mean(lonname)
+    
+    return data_mean, lat_mean
 
 #
 # compute sea ice area
@@ -208,17 +332,32 @@ def seaice_areas(ds, areacello, lsm, sicname='ileadfra', latname='nav_lat'):
     return _ds
 
 
-def ice_volumes(ds):
+def ice_volumes(ds, areacello, lsm, latname='nav_lat', xname='x', yname='y'):
+    
+    # scale from m3 to km3
+    icescale = 1e-9
     
     # iicethic is cell average ice thickness
     # i.e. if half cell is covered by 2m thick ice, iicethic is 1m
-    _nh = (ds['iicethic'].where(lat_05 > 0) * areacello_05).sum(('x','y')) 
-    _sh = (ds['iicethic'].where(lat_05 < 0) * areacello_05).sum(('x','y')) 
+    _nh = (ds['iicethic'].where(ds[latname] > 0) * areacello).sum(('x','y')) * icescale
+    _sh = (ds['iicethic'].where(ds[latname] < 0) * areacello).sum(('x','y')) * icescale 
+    
+    # area-mean ice thickness where concentration >= 0.15
+    nh_thk_wgt = ds['iicethic'].where(ds['ileadfra'] >= 0.15).where(ds[latname] > 0).weighted(areacello)
+    sh_thk_wgt = ds['iicethic'].where(ds['ileadfra'] >= 0.15).where(ds[latname] < 0).weighted(areacello)
+    _nh_thk = nh_thk_wgt.mean((xname,yname))
+    _sh_thk = sh_thk_wgt.mean((xname,yname))
     
     _nh.name = 'ar_siv'
     _sh.name = 'an_siv'
     _ds_n = _nh.to_dataset()
     _ds_s = _sh.to_dataset()
-    _ds = xr.merge([_ds_n, _ds_s])
+    
+    _nh_thk.name = 'ar_sit'
+    _sh_thk.name = 'an_sit'
+    _ds_n_thk = _nh_thk.to_dataset()
+    _ds_s_thk = _sh_thk.to_dataset()
+    
+    _ds = xr.merge([_ds_n, _ds_s, _ds_n_thk, _ds_s_thk])
     
     return _ds
